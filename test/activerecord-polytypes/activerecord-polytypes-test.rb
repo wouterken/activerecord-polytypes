@@ -77,4 +77,26 @@ class ActiveRecordPolytypesTest < Minitest::Test
       Searchable::User.first.slice(:search_index_string, :user_email, :user_username).values,
       ["Steven King", "steven@king.com", "@sk"]
   end
+
+  def test_you_can_eager_load_subtype_relationships
+    assert Searchable::User.eager_load(:posts).all? { |u| u.posts.loaded? }
+  end
+
+  def test_you_can_preload_subtype_relationships
+    assert Searchable::Subtype.preload(:user_posts).all? { |s| s.user_posts.loaded? }
+  end
+
+  def test_you_can_eager_load_subtype_relationships
+    assert Searchable::Subtype.eager_load(:user_posts).all? { |s| s.user_posts.loaded? }
+  end
+
+  def test_you_can_preload_subtype_relationships_on_subtypes
+    assert Searchable::User.preload(:posts).all? { |u| u.posts.loaded? }
+  end
+
+  def test_you_can_eager_load_subtype_relationships_on_subtypes
+    assert Searchable::User.eager_load(:posts).all? { |u| u.posts.loaded? }
+  end
+
+
 end

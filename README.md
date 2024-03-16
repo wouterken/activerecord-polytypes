@@ -158,6 +158,25 @@ end
 Searchable::Subtype.all # => [#<Searchable::User..., #<Searchable::Post.., #<Searchable::Category.., #<Searchable::User..]
 ```
 
+Subtypes also inherit the relationships of their supertypes, so you can even eager or preload these. E.g.
+
+On the parent type
+
+```ruby
+# Load the user_posts relation for all users. Empty for non users
+# Load the organisation_documents relation for all organisations. Empty for non organisations
+assert Entity::Subtype.preload(:user_posts, :organisation_documents).all? { |s| s.user_posts.loaded? && s.organisation_documents.loaded? }
+assert Entity::Subtype.eager_load(:user_posts, :organisation_documents).all? { |s| s.user_posts.loaded? && s.organisation_documents.loaded? }
+```
+
+On the subtype
+
+```ruby
+# Load the user_posts relation for all users. Empty for non users
+assert Entity::User.preload(:posts).all? { |s| s.posts.loaded? }
+assert Entity::User.eager_load(:posts).all? { |s| s.posts.loaded? }
+```
+
 ## Development
 
 After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake test` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.

@@ -159,10 +159,32 @@ module ActiveRecordPolytypes
         associations.each do |association|
           base_type = association.compute_class(association.class_name)
 
+          base_type.reflect_on_all_associations.each do |assoc|
+            case assoc.macro
+            when :belongs_to
+              subtype_class.belongs_to :"#{association.name}_#{assoc.name}", assoc.scope, **assoc.options, class_name: assoc.class_name
+            when :has_one, :has_many
+              scope = if assoc.options.key?(:as)
+                refined = ->{ where(assoc.type => base_type.name) }
+                if assoc.scope
+                  ->{ instance_exec(&refined).instance_exec(&assoc.scope) }
+                else
+                  refined
+                end
+              else
+                assoc.scope
+              end
+              self.send(assoc.macro, :"#{association.name}_#{assoc.name}", scope, **assoc.options.except(:inverse_of, :destroy, :as), primary_key: "#{association.name}_#{base_type.primary_key}", foreign_key: assoc.foreign_key, class_name: "::#{assoc.class_name}")
+            end
+          end
+        end
+
+        associations.each do |association|
+          base_type = association.compute_class(association.class_name)
           # Generate a class name for the subtype proxy.
           subtype_class_name = "#{supertype_type.name}::#{base_type.name}"
           # Dynamically create a proxy class for the multi-table inheritance.
-          build_mti_proxy_class!(association, base_type, supertype_type)
+          build_mti_proxy_class!(association, base_type, supertype_type, subtype_class)
 
           select_components_by_type[association.name] = base_type.columns.map do |column|
             column_name = "#{association.name}_#{column.name}"
@@ -186,6 +208,7 @@ module ActiveRecordPolytypes
               join_components_by_type[typename]
             ]
           end.transpose
+
           from(<<~SQL)
             (
               SELECT #{table_name}.*,#{select_components * ","}, CASE #{case_components * " "} ELSE '#{name}' END AS type
@@ -200,12 +223,12 @@ module ActiveRecordPolytypes
     end
 
     # Dynamically builds a proxy class for a given association to handle multi-table inheritance.
-    def build_mti_proxy_class!(association, base_type, supertype_type)
+    def build_mti_proxy_class!(association, base_type, supertype_type, subtype_class)
       # Remove any previously defined constant to avoid constant redefinition warnings.
       supertype_type.send(:remove_const, base_type.name) if supertype_type.constants.include?(base_type.name.to_sym)
 
       # Define a new class inherited from the current class acting as the subtype.
-      subtype_class = supertype_type.const_set(base_type.name, Class.new(self))
+      subtype_class = supertype_type.const_set(base_type.name, Class.new(subtype_class))
       subtype_class.class_eval do
         attr_reader :inner
 
@@ -217,9 +240,27 @@ module ActiveRecordPolytypes
         after_save :reload, if: :previously_new_record?
 
         # Define attributes and delegation methods for columns inherited from the base type.
+        base_type.reflect_on_all_associations.each do |assoc|
+          case assoc.macro
+          when :belongs_to
+            belongs_to assoc.name, assoc.scope, **assoc.options, class_name: assoc.class_name
+          when :has_one, :has_many
+            scope = if assoc.options.key?(:as)
+              refined = ->{ where(assoc.type => base_type.name) }
+              if assoc.scope
+                ->{ instance_exec(&refined).instance_exec(&assoc.scope) }
+              else
+                refined
+              end
+            else
+              assoc.scope
+            end
+            self.send(assoc.macro, assoc.name, scope, **assoc.options.except(:inverse_of, :destroy, :as), primary_key: "#{association.name}_#{base_type.primary_key}", foreign_key: assoc.foreign_key, class_name: "::#{assoc.class_name}")
+          end
+        end
         base_type.columns.each do |column|
           column_name = "#{association.name}_#{column.name}"
-          attribute column_name, column.type
+          attribute column_name
           delegate column.name, to: :@inner, allow_nil: true, prefix: association.name
           define_method :"#{column_name}=" do |value|
             case

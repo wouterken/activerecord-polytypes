@@ -11,12 +11,12 @@ end
 
 class Organisation < ApplicationRecord
   belongs_to :entity
-  has_many :organisations, inverse_of: :user
+  has_many :users, inverse_of: :organisation
 end
 
 class Post < ApplicationRecord
   belongs_to :searchable
-  belongs_to :user, inverse_of: :post
+  belongs_to :user, inverse_of: :posts
 end
 
 class Entity < ApplicationRecord
