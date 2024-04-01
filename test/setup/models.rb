@@ -6,6 +6,8 @@ class User < ApplicationRecord
   belongs_to :searchable
   belongs_to :entity
   belongs_to :organisation, inverse_of: :organisation
+
+  enum status: %i[active invited banned], _prefix: :status
   has_many :posts, inverse_of: :user
 end
 

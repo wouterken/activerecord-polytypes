@@ -16,7 +16,7 @@ ActiveRecord::Base.transaction do
 
   # Create Organisations
   organisations = 20.times.map do |n|
-    { business_number: "BN#{n}", phone_number: "555-#{n.to_s.rjust(4, '0')}", entity_id: n + 1 }
+    { business_number: "BN#{n}", phone_number: "555-#{n.to_s.rjust(4, "0")}", entity_id: n + 1 }
   end
   Organisation.insert_all(organisations)
 
@@ -43,7 +43,8 @@ ActiveRecord::Base.transaction do
       username: "user#{n}",
       entity_id: 21 + n, # Assuming Entity IDs for users start after organisations
       organisation_id: (n % 20) + 1, # Ensuring users are evenly distributed across organisations
-      searchable_id: user_searchables[n]
+      searchable_id: user_searchables[n],
+      status: [*0..2].sample
     }
   end
   User.insert_all(users)

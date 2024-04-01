@@ -193,14 +193,14 @@ module ActiveRecordPolytypes
 
           case_components_by_type[association.name] = "WHEN #{association.table_name}.#{association.join_primary_key} IS NOT NULL THEN '#{subtype_class_name}'"
           join_components_by_type[association.name] = if association.belongs_to?
-            "LEFT JOIN #{association.table_name} ON #{table_name}.#{association.foreign_key} = #{association.table_name}.#{association.join_primary_key}"
+            ["LEFT", association.table_name, "%s JOIN %s ON #{table_name}.#{association.foreign_key} = #{association.table_name}.#{association.join_primary_key}"]
           else
-            "LEFT JOIN #{association.table_name} ON #{table_name}.#{association.association_primary_key} = #{association.table_name}.#{association.join_primary_key}"
+            ["LEFT", association.table_name, "%s JOIN %s ON #{table_name}.#{association.association_primary_key} = #{association.table_name}.#{association.join_primary_key}"]
           end
         end
 
         # Define a scope `with_subtypes` that enriches the base query with subtype information.
-        scope :with_subtypes, ->(*typenames){
+        scope :with_subtypes, ->(*typenames, **join_sources){
           select_components, case_components, join_components = typenames.map do |typename|
             [
               select_components_by_type[typename],
@@ -212,7 +212,10 @@ module ActiveRecordPolytypes
           from(<<~SQL)
             (
               SELECT #{table_name}.*,#{select_components * ","}, CASE #{case_components * " "} ELSE '#{name}' END AS type
-              FROM #{table_name} #{join_components * " "}
+              FROM #{table_name} #{typenames.map do |typename|
+                join_type, join_source, join_string,  = join_components_by_type[typename]
+                join_string % join_sources.fetch(typename, [join_type, join_source])
+              end * " "}
             ) #{table_name}
           SQL
         }
@@ -230,14 +233,21 @@ module ActiveRecordPolytypes
       # Define a new class inherited from the current class acting as the subtype.
       subtype_class = supertype_type.const_set(base_type.name, Class.new(subtype_class))
       subtype_class.class_eval do
-        attr_reader :inner
-
         # Only include records of this subtype in the default scope.
-        default_scope ->{ with_subtypes(association.name) }
+        default_scope ->{
+          with_subtypes(association.name, **{
+            association.name => [:INNER, "#{association.table_name}"]
+          })
+        }
         # Define callbacks and methods for initializing and saving the inner object.
-        after_initialize :initialize_inner_object
-        before_save :save_inner_object_if_changed
-        after_save :reload, if: :previously_new_record?
+        after_initialize :inner
+        if association.belongs_to?
+          before_save :save_inner_object_if_changed
+        else
+          after_save :save_inner_object_if_changed
+        end
+
+        after_save :reload_inner!, if: :previously_new_record?
 
         # Define attributes and delegation methods for columns inherited from the base type.
         base_type.reflect_on_all_associations.each do |assoc|
@@ -258,6 +268,26 @@ module ActiveRecordPolytypes
             self.send(assoc.macro, assoc.name, scope, **assoc.options.except(:inverse_of, :destroy, :as), primary_key: "#{association.name}_#{base_type.primary_key}", foreign_key: assoc.foreign_key, class_name: "::#{assoc.class_name}")
           end
         end
+
+        base_type.enum_index&.each do |_, kwargs, _|
+          kwargs = kwargs.dup
+          enum_type = kwargs.keys.first
+          enum_values = kwargs.delete(enum_type)
+          namespaced_attribute = "#{association.name}_#{enum_type}"
+          attribute namespaced_attribute, :integer
+          kwargs.merge!(namespaced_attribute => enum_values)
+          self.enum(**kwargs)
+        end
+
+        base_type.scope_index&.each do |args, kwargs, blk|
+          self.scope(args[0], proc do |*scope_args|
+            inner_scope = base_type.instance_exec(*scope_args, &args[1]).to_sql
+            unscope(:from).with_subtypes(association.name, **{
+              association.name => [:INNER, "(#{inner_scope}) #{association.table_name}"]
+            })
+          end)
+        end
+
         base_type.columns.each do |column|
           column_name = "#{association.name}_#{column.name}"
           attribute column_name
@@ -265,8 +295,7 @@ module ActiveRecordPolytypes
           define_method :"#{column_name}=" do |value|
             case
             when @inner then @inner.send(:"#{column.name}=", value)
-            else
-              (@assigned_attributes ||= {})[column.name] = value
+            else (@assigned_attributes ||= {})[column.name] = value
             end
           end
         end
@@ -280,8 +309,13 @@ module ActiveRecordPolytypes
           end
         end
 
+        def inner
+          @inner ||= initialize_inner_object
+        end
+
         # Initialize the inner object based on the association's attributes or build a new association instance.
         define_method :initialize_inner_object do
+          return if @inner
           # Prepare attributes for instantiation.
           @inner_attributes ||= base_type.columns.each_with_object({}) do |c, attrs|
             attrs[c.name.to_s] = self["#{association.name}_#{c.name}"]
@@ -304,13 +338,14 @@ module ActiveRecordPolytypes
         # Override `as_json` to include attributes from both the outer and inner objects.
         define_method :as_json do |options={}|
           only = base_type.column_names + ["type"] + (options || {}).fetch(:only,[])
-          outer = super(**(options || {}), only: )
+          outer = super(**(options || {}), only:)
           @inner.as_json(options).merge(outer)
         end
 
         # Save the inner object if it has changed before saving the outer object.
         def save_inner_object_if_changed
-          @inner.save if @inner.changed?
+          @inner.save if @inner.changed? || @inner.new_record?
+          self.errors.merge!(@inner.errors)
         end
 
         # Check if an attribute exists in either the outer or inner object.
@@ -318,14 +353,30 @@ module ActiveRecordPolytypes
           super || @inner._has_attribute?(attribute)
         end
 
-        # Reload both the outer and inner objects to ensure consistency.
-        define_method :reload do
-          super()
-          @inner.reload
+        define_method :_assign_attribute do |name, value|
+          inner.has_attribute?(name) ? inner.send(:_assign_attribute, name, value) : super(name, value)
+        end
+
+        define_method :update_column do |key, value|
+          return super if self.class.column_names.include?(key.to_s)
+          return inner.update_column(key, value) if inner.class.column_names.include?(key.to_s)
+          key = key.to_s.gsub(%r{^#{association.name}_}, '')
+          return inner.update_column(key.to_sym, value) if inner.class.column_names.include?(key)
+        end
+
+        define_method :reload_inner! do
+          inner.reload if inner.persisted?
           # Update attributes from the reloaded inner object.
           base_type.columns.each_with_object({}) do |c, attrs|
             self["#{association.name}_#{c.name}"] = @inner[c.name.to_s]
           end
+        end
+
+        # Reload both the outer and inner objects to ensure consistency.
+        define_method :reload do
+          super()
+          reload_inner!
+
           self
         end
       end
@@ -333,7 +384,30 @@ module ActiveRecordPolytypes
   end
 end
 
+module ActiveRecordPolytypeInterceptors
+  module ClassMethods
+    attr_accessor :enum_index, :scope_index
+
+    def enum(*args, **kwargs, &blk)
+      @enum_index ||= []
+      @enum_index << [args.deep_dup, kwargs.deep_dup, blk]
+      super
+    end
+
+    def scope(*args, **kwargs, &blk)
+      @scope_index ||= []
+      @scope_index << [args.dup, kwargs.dup, blk]
+      super
+    end
+  end
+
+  def self.prepended(mod)
+    mod.singleton_class.prepend(ClassMethods)
+  end
+end
+
 # Hook into ActiveSupport's on_load mechanism to automatically include this functionality into ActiveRecord.
 ActiveSupport.on_load(:active_record) do
   include ActiveRecordPolytypes
+  prepend ActiveRecordPolytypeInterceptors
 end

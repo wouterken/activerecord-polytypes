@@ -79,24 +79,31 @@ class ActiveRecordPolytypesTest < Minitest::Test
   end
 
   def test_you_can_eager_load_subtype_relationships
-    assert Searchable::User.eager_load(:posts).all? { |u| u.posts.loaded? }
+    assert(Searchable::User.eager_load(:posts).all? { |u| u.posts.loaded? })
   end
 
   def test_you_can_preload_subtype_relationships
-    assert Searchable::Subtype.preload(:user_posts).all? { |s| s.user_posts.loaded? }
+    assert(Searchable::Subtype.preload(:user_posts).all? { |s| s.user_posts.loaded? })
   end
 
   def test_you_can_eager_load_subtype_relationships
-    assert Searchable::Subtype.eager_load(:user_posts).all? { |s| s.user_posts.loaded? }
+    assert(Searchable::Subtype.eager_load(:user_posts).all? { |s| s.user_posts.loaded? })
   end
 
   def test_you_can_preload_subtype_relationships_on_subtypes
-    assert Searchable::User.preload(:posts).all? { |u| u.posts.loaded? }
+    assert(Searchable::User.preload(:posts).all? { |u| u.posts.loaded? })
   end
 
   def test_you_can_eager_load_subtype_relationships_on_subtypes
-    assert Searchable::User.eager_load(:posts).all? { |u| u.posts.loaded? }
+    assert(Searchable::User.eager_load(:posts).all? { |u| u.posts.loaded? })
   end
 
+  def test_subtypes_inherit_queries
+    assert Entity::User.find_by(user_id: 10).posts == User.find(10).posts
+  end
 
+  def test_subtypes_inherit_enums
+    assert Entity::User.user_statuses == User.statuses
+    assert Entity::User.status_active.pluck(:user_id).sort == User.status_active.pluck(:id).sort
+  end
 end

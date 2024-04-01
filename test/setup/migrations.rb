@@ -1,7 +1,5 @@
-
 class CreateSeedData < ActiveRecord::Migration[5.0]
   def change
-
     create_table :entities do |t|
       t.string :name
       t.integer :billing_plan
@@ -18,6 +16,7 @@ class CreateSeedData < ActiveRecord::Migration[5.0]
       t.references :entity
       t.references :searchable
       t.references :organisation
+      t.integer :status
       t.timestamps
     end
 
@@ -37,4 +36,4 @@ class CreateSeedData < ActiveRecord::Migration[5.0]
   end
 end
 
-CreateSeedData.migrate('up')
+CreateSeedData.migrate("up")
